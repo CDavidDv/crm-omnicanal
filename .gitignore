@@ -1,0 +1,26 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# Credenciales — NUNCA commitear
+.env
+.env.local
+.env.*.local
+credentials/
+*.pem
+*.key
+
+# Datos locales
+/data
+/media
+/uploads
+
+# SO / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
