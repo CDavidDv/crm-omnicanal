@@ -1,16 +1,24 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, max, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { channelIdentities, contacts, conversations, leads } from "@/lib/db/schema";
 
 /**
- * Listado de contactos con búsqueda. Un contacto puede tener varias identidades
- * de canal, así que los canales se agregan aparte: en Instagram y Messenger no
- * hay teléfono y asumir que `phone` identifica al contacto es justo el error
- * que la tabla `channel_identities` existe para evitar.
+ * Listado de contactos con búsqueda.
+ *
+ * Los datos por contacto (canales, oportunidades abiertas, último mensaje) se
+ * traen en consultas aparte y se cruzan en memoria, en vez de con subconsultas
+ * correlacionadas: la primera versión usaba SQL crudo y devolvía los canales de
+ * TODOS los contactos en cada fila. Con el listado acotado a 300 filas, cuatro
+ * consultas simples salen más baratas que un bug silencioso.
+ *
+ * Los canales salen de `channel_identities`, nunca de `phone`: en Instagram y
+ * Messenger no hay teléfono.
  */
 
 export const dynamic = "force-dynamic";
+
+const LIMIT = 300;
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -36,38 +44,71 @@ export async function GET(request: Request) {
 
   if (channel === "whatsapp" || channel === "messenger" || channel === "instagram") {
     filters.push(
-      sql`exists (
-        select 1 from ${channelIdentities}
-        where ${channelIdentities.contactId} = ${contacts.id}
-          and ${channelIdentities.channel} = ${channel}
-      )`
+      inArray(
+        contacts.id,
+        db
+          .select({ id: channelIdentities.contactId })
+          .from(channelIdentities)
+          .where(eq(channelIdentities.channel, channel))
+      )
     );
   }
 
   const rows = await db
-    .select({
-      contact: contacts,
-      channels: sql<string[]>`coalesce(
-        array(
-          select distinct ${channelIdentities.channel}::text
-          from ${channelIdentities}
-          where ${channelIdentities.contactId} = ${contacts.id}
-        ),
-        '{}'
-      )`,
-      openLeads: sql<number>`(
-        select count(*)::int from ${leads}
-        where ${leads.contactId} = ${contacts.id} and ${leads.status} = 'open'
-      )`,
-      lastMessageAt: sql<string | null>`(
-        select max(${conversations.lastMessageAt}) from ${conversations}
-        where ${conversations.contactId} = ${contacts.id}
-      )`,
-    })
+    .select()
     .from(contacts)
     .where(filters.length > 0 ? and(...filters) : undefined)
     .orderBy(desc(contacts.updatedAt))
-    .limit(300);
+    .limit(LIMIT);
 
-  return NextResponse.json(rows);
+  if (rows.length === 0) return NextResponse.json([]);
+
+  const ids = rows.map((r) => r.id);
+
+  const [identities, openLeads, lastMessages] = await Promise.all([
+    db
+      .select({
+        contactId: channelIdentities.contactId,
+        channel: channelIdentities.channel,
+      })
+      .from(channelIdentities)
+      .where(inArray(channelIdentities.contactId, ids)),
+    db
+      .select({
+        contactId: leads.contactId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(leads)
+      .where(and(inArray(leads.contactId, ids), eq(leads.status, "open")))
+      .groupBy(leads.contactId),
+    db
+      .select({
+        contactId: conversations.contactId,
+        lastMessageAt: max(conversations.lastMessageAt),
+      })
+      .from(conversations)
+      .where(inArray(conversations.contactId, ids))
+      .groupBy(conversations.contactId),
+  ]);
+
+  const channelsByContact = new Map<number, Set<string>>();
+  for (const i of identities) {
+    const set = channelsByContact.get(i.contactId) ?? new Set<string>();
+    set.add(i.channel);
+    channelsByContact.set(i.contactId, set);
+  }
+
+  const leadsByContact = new Map(openLeads.map((l) => [l.contactId, l.count]));
+  const lastByContact = new Map(
+    lastMessages.map((c) => [c.contactId, c.lastMessageAt])
+  );
+
+  return NextResponse.json(
+    rows.map((contact) => ({
+      contact,
+      channels: [...(channelsByContact.get(contact.id) ?? [])].sort(),
+      openLeads: leadsByContact.get(contact.id) ?? 0,
+      lastMessageAt: lastByContact.get(contact.id) ?? null,
+    }))
+  );
 }
