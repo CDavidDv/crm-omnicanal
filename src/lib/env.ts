@@ -44,9 +44,18 @@ const schema = z.object({
   MOCK_CHANNELS: z.string().optional(),
 });
 
+/**
+ * `next build` evalúa el módulo de cada ruta para recolectar sus metadatos, y
+ * ahí todavía no hay credenciales. No debe haberlas: en un build por Dockerfile
+ * meterlas significaría hornear los secretos en las capas de la imagen.
+ * Durante esa fase se usan valores de relleno que nunca atienden una petición;
+ * en runtime la validación sigue siendo estricta y aborta el arranque.
+ */
+const isBuildPhase = process.env.NEXT_PHASE === "phase-production-build";
+
 const parsed = schema.safeParse(process.env);
 
-if (!parsed.success) {
+if (!parsed.success && !isBuildPhase) {
   const issues = parsed.error.issues
     .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
     .join("\n");
@@ -55,14 +64,25 @@ if (!parsed.success) {
   );
 }
 
-export const env = parsed.data;
+/** Relleno de build. Solo se usa cuando `isBuildPhase` es true. */
+const BUILD_PLACEHOLDER = schema.parse({
+  DATABASE_URL: "postgresql://build:build@localhost:5432/build",
+  SESSION_SECRET: "placeholder-solo-para-la-fase-de-build",
+  ADMIN_PASSWORD: "placeholder-solo-para-la-fase-de-build",
+});
+
+export const env = parsed.success ? parsed.data : BUILD_PLACEHOLDER;
 
 /**
  * Los canales simulados jamás deben llegar a producción: un envío que el
  * vendedor cree entregado y que nunca salió es peor que un error visible.
  * Se falla en el arranque, no en silencio.
  */
-if (env.MOCK_CHANNELS === "1" && process.env.NODE_ENV === "production") {
+if (
+  !isBuildPhase &&
+  env.MOCK_CHANNELS === "1" &&
+  process.env.NODE_ENV === "production"
+) {
   throw new Error(
     "MOCK_CHANNELS=1 con NODE_ENV=production. Los canales simulados son solo " +
       "para desarrollo local: quita la variable del entorno de producción."
