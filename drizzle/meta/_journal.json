@@ -15,6 +15,13 @@
       "when": 1785226210928,
       "tag": "0001_black_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785648621982,
+      "tag": "0002_skinny_diamondback",
+      "breakpoints": true
     }
   ]
 }

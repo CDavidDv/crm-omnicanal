@@ -24,3 +24,9 @@ credentials/
 Thumbs.db
 .idea/
 .vscode/
+
+# Cloudflare Workers
+.open-next
+.wrangler
+.dev.vars
+cloudflare-env.d.ts

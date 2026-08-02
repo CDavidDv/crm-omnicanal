@@ -1,4 +1,5 @@
 import type { Channel } from "@/lib/db/schema";
+import { waitForSlot } from "./rate-limit";
 import type { SendResult } from "./types";
 
 /**
@@ -12,21 +13,11 @@ import type { SendResult } from "./types";
  *      un par de veces; si sigue fallando lo declara reintentable y la cola de
  *      salida se encarga (src/lib/messaging/outbox.ts)
  *
- * El espaciado vive en memoria del proceso: con varias instancias cada una
- * lleva su propio ritmo. Los límites reales de Meta son muy superiores a lo
- * que aquí se permite, así que el margen absorbe esa imprecisión.
+ * El espaciado se reserva en la base de datos (channels/rate-limit.ts), no en
+ * memoria: en Cloudflare Workers cada petición corre en su propio aislamiento
+ * y un contador en memoria daría a cada uno el suyo, dejando el canal sin
+ * espaciado real justo bajo carga.
  */
-
-/**
- * Milisegundos mínimos entre llamadas por canal. Meta admite bastante más
- * (WhatsApp Cloud API ronda 80 msg/s), pero un CRM de ventas no necesita ese
- * ritmo y el volumen alto es lo que dispara las revisiones de calidad.
- */
-const MIN_GAP_MS: Record<Channel, number> = {
-  whatsapp: 125, // ~8/s
-  messenger: 100, // ~10/s
-  instagram: 100,
-};
 
 /** Reintentos dentro de la misma petición. Lo demás lo hereda la cola. */
 const MAX_INLINE_RETRIES = 2;
@@ -50,35 +41,7 @@ const RETRYABLE_META_CODES = new Set([
   2, // API Service — caída temporal
 ]);
 
-const lastCallAt: Record<Channel, number> = {
-  whatsapp: 0,
-  messenger: 0,
-  instagram: 0,
-};
-
-/** Serializa por canal: sin esto dos envíos simultáneos ignoran el espaciado. */
-const chain: Record<Channel, Promise<unknown>> = {
-  whatsapp: Promise.resolve(),
-  messenger: Promise.resolve(),
-  instagram: Promise.resolve(),
-};
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Encola la tarea detrás de lo que ya esté corriendo en ese canal. */
-function serialize<T>(channel: Channel, task: () => Promise<T>): Promise<T> {
-  const next = chain[channel].then(task, task);
-  // No dejar que un fallo rompa la cadena del canal.
-  chain[channel] = next.catch(() => undefined);
-  return next;
-}
-
-async function waitForSlot(channel: Channel): Promise<void> {
-  const gap = MIN_GAP_MS[channel];
-  const elapsed = Date.now() - lastCallAt[channel];
-  if (elapsed < gap) await sleep(gap - elapsed);
-  lastCallAt[channel] = Date.now();
-}
 
 /** Meta manda `Retry-After` en segundos; si no viene, backoff exponencial. */
 function backoffMs(attempt: number, retryAfter: string | null): number {
@@ -131,55 +94,55 @@ export async function graphFetch<T = any>(
   url: string,
   init: RequestInit
 ): Promise<GraphResponse<T>> {
-  return serialize(channel, async () => {
-    let lastError: GraphError = {
-      message: "Sin respuesta de Meta",
-      retryable: true,
-    };
+  let lastError: GraphError = {
+    message: "Sin respuesta de Meta",
+    retryable: true,
+  };
 
-    for (let attempt = 0; attempt <= MAX_INLINE_RETRIES; attempt++) {
-      await waitForSlot(channel);
+  for (let attempt = 0; attempt <= MAX_INLINE_RETRIES; attempt++) {
+    // Reserva turno en la marca compartida antes de cada intento, incluidos
+    // los reintentos: un 429 no autoriza a saltarse el espaciado.
+    await waitForSlot(channel);
 
-      try {
-        const res = await fetch(url, init);
+    try {
+      const res = await fetch(url, init);
 
-        // 204 y similares no traen cuerpo JSON.
-        const text = await res.text();
-        const body = text ? safeJson(text) : {};
+      // 204 y similares no traen cuerpo JSON.
+      const text = await res.text();
+      const body = text ? safeJson(text) : {};
 
-        if (res.ok) return { ok: true, data: body as T };
+      if (res.ok) return { ok: true, data: body as T };
 
-        const error = classifyGraphError(res.status, body);
-        const retryAfter = res.headers.get("retry-after");
-        if (retryAfter) error.retryAfterSec = Number(retryAfter) || undefined;
+      const error = classifyGraphError(res.status, body);
+      const retryAfter = res.headers.get("retry-after");
+      if (retryAfter) error.retryAfterSec = Number(retryAfter) || undefined;
 
-        if (!error.retryable || attempt === MAX_INLINE_RETRIES) {
-          if (error.retryable) {
-            console.warn(
-              `[graph:${channel}] agotados los reintentos en línea (${error.message}). Pasa a la cola.`
-            );
-          }
-          return { ok: false, error };
+      if (!error.retryable || attempt === MAX_INLINE_RETRIES) {
+        if (error.retryable) {
+          console.warn(
+            `[graph:${channel}] agotados los reintentos en línea (${error.message}). Pasa a la cola.`
+          );
         }
-
-        console.warn(
-          `[graph:${channel}] ${error.message} — reintento ${attempt + 1}/${MAX_INLINE_RETRIES}`
-        );
-        lastError = error;
-        await sleep(backoffMs(attempt, retryAfter));
-      } catch (e) {
-        // Fallo de red: siempre reintentable, nunca es rechazo de Meta.
-        lastError = {
-          message: e instanceof Error ? e.message : String(e),
-          retryable: true,
-        };
-        if (attempt === MAX_INLINE_RETRIES) return { ok: false, error: lastError };
-        await sleep(backoffMs(attempt, null));
+        return { ok: false, error };
       }
-    }
 
-    return { ok: false, error: lastError };
-  });
+      console.warn(
+        `[graph:${channel}] ${error.message} — reintento ${attempt + 1}/${MAX_INLINE_RETRIES}`
+      );
+      lastError = error;
+      await sleep(backoffMs(attempt, retryAfter));
+    } catch (e) {
+      // Fallo de red: siempre reintentable, nunca es rechazo de Meta.
+      lastError = {
+        message: e instanceof Error ? e.message : String(e),
+        retryable: true,
+      };
+      if (attempt === MAX_INLINE_RETRIES) return { ok: false, error: lastError };
+      await sleep(backoffMs(attempt, null));
+    }
+  }
+
+  return { ok: false, error: lastError };
 }
 
 function safeJson(text: string): any {

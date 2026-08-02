@@ -5,7 +5,13 @@ import { z } from "zod";
  * el CRM debe arrancar con 0, 1, 2 o 3 canales configurados.
  */
 const schema = z.object({
-  DATABASE_URL: z.string().min(1, "Falta DATABASE_URL"),
+  /**
+   * Opcional a propósito: en Cloudflare Workers la conexión llega por el
+   * binding HYPERDRIVE, no por variable de entorno. Fuera de Workers (next dev,
+   * scripts, tests) sí hace falta, y `src/lib/db/index.ts` falla con un mensaje
+   * claro si no hay ninguna de las dos.
+   */
+  DATABASE_URL: z.string().optional(),
   APP_URL: z.string().default("http://localhost:3000"),
   SESSION_SECRET: z.string().min(16, "SESSION_SECRET debe tener 16+ caracteres"),
   ADMIN_EMAIL: z.string().default("admin@localhost"),
@@ -66,7 +72,6 @@ if (!parsed.success && !isBuildPhase) {
 
 /** Relleno de build. Solo se usa cuando `isBuildPhase` es true. */
 const BUILD_PLACEHOLDER = schema.parse({
-  DATABASE_URL: "postgresql://build:build@localhost:5432/build",
   SESSION_SECRET: "placeholder-solo-para-la-fase-de-build",
   ADMIN_PASSWORD: "placeholder-solo-para-la-fase-de-build",
 });

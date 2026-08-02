@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "crm-omnicanal",
+  // Entrada propia: envuelve el worker de OpenNext para añadir el handler
+  // `scheduled` que necesitan los Cron Triggers. Ver custom-worker.ts.
+  "main": "custom-worker.ts",
+  "compatibility_date": "2025-03-25",
+  // nodejs_compat: node:crypto lo usa la verificación de firma del webhook
+  // (timingSafeEqual) y el driver de Postgres.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "crm-omnicanal"
+    }
+  ],
+  // Hyperdrive agrupa las conexiones a Postgres: sin esto cada invocación
+  // abriría una conexión nueva y Neon se quedaría sin cupo.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "PENDIENTE_CREAR_CON_WRANGLER",
+      "localConnectionString": "postgresql://crm:crm@localhost:5432/crm"
+    }
+  ],
+  // Drena la cola de salida. En Railway esto era un cron externo; aquí es
+  // nativo y por minuto. Ver src/app/api/cron/outbox/route.ts.
+  "triggers": {
+    "crons": ["*/2 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

@@ -390,6 +390,22 @@ export const quickReplies = pgTable(
   (t) => [index("idx_quick_replies_order").on(t.position)]
 );
 
+/**
+ * Rate limit compartido por canal. Vive en la DB y no en memoria porque en
+ * Cloudflare Workers cada petición corre en su propio aislamiento: un
+ * limitador en memoria daría a cada uno su propio contador y el espaciado
+ * dejaría de existir justo bajo carga, que es cuando importa (docs/ANTI-BAN.md).
+ *
+ * `next_available_at` es la marca a partir de la cual se puede volver a llamar
+ * a Graph API. Reservar un turno es un solo UPDATE atómico.
+ */
+export const rateLimits = pgTable("rate_limits", {
+  channel: channelEnum("channel").primaryKey(),
+  nextAvailableAt: timestamp("next_available_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // -----------------------------------------------------------------------------
 // Tipos inferidos
 // -----------------------------------------------------------------------------
