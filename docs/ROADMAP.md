@@ -10,6 +10,9 @@ Fecha de corte: 28 de julio de 2026.
 | Webhook único | WhatsApp + Messenger + Instagram, verificación GET, firma `X-Hub-Signature-256`, idempotencia, respuesta 200 siempre | `src/app/api/webhooks/meta/route.ts` |
 | Adaptadores de canal | WhatsApp Cloud API (texto, plantillas, leído, media), Messenger, Instagram, health check por canal | `src/lib/channels/` |
 | Policy anti-ban | ventana 24 h, etiqueta HUMAN_AGENT, plantilla obligatoria, opt-out automático | `src/lib/channels/policy.ts` |
+| Rate limit | único punto de salida a Graph API: espacia llamadas por canal, reintenta 429 y transitorios honrando `Retry-After` con backoff y jitter, y **no** reintenta los rechazos definitivos | `src/lib/channels/http.ts` |
+| Cola de salida | lo que falla por causa transitoria se encola; `/api/cron/outbox` drena con backoff cuadrático (hasta 5 intentos) y **vuelve a pasar la policy antes de cada reintento**: si la ventana se cerró, se descarta | `src/lib/messaging/outbox.ts` |
+| Tests | vitest sobre la policy y la clasificación de errores de Graph — las dos piezas que no pueden fallar. CI en GitHub Actions | `src/lib/**/*.test.ts`, `.github/workflows/ci.yml` |
 | Ingesta | normalización de los 3 canales a un solo formato, alta automática de contacto | `src/lib/messaging/ingest.ts` |
 | Envío | un solo camino con policy previa, registro de fallos de Meta | `src/lib/messaging/send.ts` |
 | Auth | login, JWT en cookie httpOnly, middleware que protege todo el panel | `src/lib/auth/`, `src/middleware.ts` |
@@ -29,23 +32,37 @@ Fecha de corte: 28 de julio de 2026.
 
 ## 🔜 Siguiente (orden sugerido)
 
-1. **Multiusuario real** — tabla `users`, roles, asignación de conversaciones
+1. **Página de contactos** — `CLAUDE.md` la lista en la estructura pero no
+   existe: ni ruta `(app)/contacts/`, ni `/api/contacts`, ni link en el sidebar.
+   Hoy solo se pueden exportar a CSV
 2. **Pantalla de ajustes para las respuestas rápidas** — hoy solo hay API y
    selector; el alta se hace con `POST /api/quick-replies`
-3. **Adjuntos en Instagram** — requiere alojar el archivo en una URL pública
+3. **Etiquetas** — las tablas `tags` y `contact_tags` están en el schema sin
+   una sola línea que las use
+4. **Adjuntos en Instagram** — requiere alojar el archivo en una URL pública
    (S3/R2 firmado); Meta no acepta subir bytes en ese canal
-4. **Migración a WebSocket/SSE** si el polling estorba
-5. **IA opcional** — sugerencia de respuesta y resumen de conversación
+5. **Migración a WebSocket/SSE** si el polling estorba. En Railway además
+   abarata: el polling cada 4–5 s de `Inbox.tsx` es CPU facturable
+6. **IA opcional** — sugerencia de respuesta y resumen de conversación
 
-## ⛔ Bloqueado por entorno (no por código)
+**Multiusuario queda fuera de alcance**: el CRM es de uso propio, un solo
+usuario. El login contra `ADMIN_EMAIL`/`ADMIN_PASSWORD` es suficiente.
 
-Nada de lo anterior se puede probar de punta a punta hasta tener:
+## 🚀 Desplegado
 
-- **Postgres arriba** — `localhost:5432` no responde y Docker no está instalado.
-  Alternativa sin Docker: Neon/Supabase y cambiar `DATABASE_URL`
-- **Credenciales de Meta** — `META_APP_ID`, `META_APP_SECRET` y las de los tres
-  canales están vacías en `.env.local`
-- **Túnel HTTPS** — `cloudflared` para que Meta pueda entregar los webhooks
+Producción en Railway: `https://crm-omnicanal-production.up.railway.app`
+Postgres managed en el mismo proyecto, red privada (sin proxy TCP público).
+Migraciones aplicadas con `db:migrate`; seed cargado.
+
+Pendiente de configurar fuera del código:
+
+- **Cron de la cola** — un cron externo debe pegarle cada 1–5 min a
+  `/api/cron/outbox` con `Authorization: Bearer $CRON_SECRET`. Sin eso, lo que
+  falle por un 429 se queda esperando en la tabla
+- **Credenciales de Meta** — los tres canales aparecen como no configurados
+  hasta cargarlas. Ver `docs/CREDENCIALES.md`
+- **Uptime monitor** a `/api/health`: si el webhook se cae, dejas de recibir
+  mensajes y no te enteras
 
 ## 🚫 Fuera de alcance (decisión de diseño)
 
