@@ -2,6 +2,7 @@ import { GRAPH, channelConfig } from "@/lib/env";
 import type {
   ChannelAdapter,
   InboundMessage,
+  SendMediaRequest,
   SendResult,
   SendTextRequest,
 } from "./types";
@@ -55,12 +56,65 @@ export async function sendMetaMessage(
   }
 }
 
+/**
+ * Messenger sí admite subir el binario en el mismo POST (`filedata`), a
+ * diferencia de WhatsApp. Instagram no lo soporta: allí Meta exige una URL
+ * pública, por eso su adaptador no implementa `sendMedia`.
+ */
+async function sendMessengerMedia(
+  { to, kind, data, mime, filename, tag }: SendMediaRequest
+): Promise<SendResult> {
+  if (!cfg.enabled) return { ok: false, error: "Canal Messenger no configurado" };
+
+  const form = new FormData();
+  form.append("recipient", JSON.stringify({ id: to }));
+  form.append("messaging_type", tag ? "MESSAGE_TAG" : "RESPONSE");
+  if (tag) form.append("tag", tag);
+  form.append(
+    "message",
+    JSON.stringify({
+      attachment: {
+        // Messenger llama "file" a lo que el resto del CRM llama "document".
+        type: kind === "document" ? "file" : kind,
+        payload: { is_reusable: true },
+      },
+    })
+  );
+  form.append(
+    "filedata",
+    new Blob([data as unknown as BlobPart], { type: mime }),
+    filename
+  );
+
+  try {
+    const res = await fetch(`${GRAPH}/${cfg.pageId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      body: form,
+    });
+    const result = await res.json();
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: result?.error?.message ?? `HTTP ${res.status}`,
+        code: result?.error?.code,
+      };
+    }
+    return { ok: true, externalMessageId: result?.message_id };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export const messengerAdapter: ChannelAdapter = {
   channel: "messenger",
 
   isEnabled: () => cfg.enabled,
 
   sendText: (req) => sendMetaMessage(cfg.pageId, cfg.token, req),
+
+  sendMedia: sendMessengerMedia,
 
   async healthCheck() {
     if (!cfg.enabled) {

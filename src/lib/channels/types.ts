@@ -48,6 +48,21 @@ export interface SendTemplateRequest {
   bodyParams?: string[];
 }
 
+/** Tipos de adjunto que los tres canales entienden. */
+export type MediaKind = "image" | "audio" | "video" | "document";
+
+export interface SendMediaRequest {
+  to: string;
+  kind: MediaKind;
+  /** Contenido del archivo. Se sube a Meta; nunca se guarda en disco local. */
+  data: Uint8Array;
+  mime: string;
+  filename: string;
+  /** Pie de foto. WhatsApp lo soporta en image/video/document; Messenger no. */
+  caption?: string;
+  tag?: "HUMAN_AGENT";
+}
+
 export interface SendResult {
   ok: boolean;
   externalMessageId?: string;
@@ -62,6 +77,11 @@ export interface ChannelAdapter {
   sendText(req: SendTextRequest): Promise<SendResult>;
   /** Solo WhatsApp soporta plantillas fuera de las 24 h. */
   sendTemplate?(req: SendTemplateRequest): Promise<SendResult>;
+  /**
+   * Adjuntos salientes. Devuelve además `mediaRef` para poder previsualizar lo
+   * enviado en la bandeja (en WhatsApp es `wa-media:<id>`).
+   */
+  sendMedia?(req: SendMediaRequest): Promise<SendResult & { mediaRef?: string }>;
   /** Diagnóstico para Configuración > Canales. */
   healthCheck(): Promise<{ ok: boolean; detail: string }>;
 }

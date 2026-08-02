@@ -1,5 +1,6 @@
 /**
- * Etapas iniciales del pipeline. Idempotente: se puede correr varias veces.
+ * Etapas iniciales del pipeline y respuestas rápidas. Idempotente: se puede
+ * correr varias veces.
  *   npm run db:seed
  *
  * Standalone a propósito: no usa el alias "@/" para no depender de la
@@ -8,7 +9,7 @@
 import { config } from "dotenv";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { stages } from "../src/lib/db/schema";
+import { quickReplies, stages } from "../src/lib/db/schema";
 
 config({ path: ".env.local" });
 config({ path: ".env" });
@@ -28,6 +29,30 @@ const DEFAULT_STAGES = [
   { key: "perdido", name: "Perdido", position: 6, color: "red", isLost: true },
 ];
 
+/** Punto de partida editable. channel null = sirve en los tres canales. */
+const DEFAULT_QUICK_REPLIES = [
+  {
+    title: "Saludo",
+    body: "¡Hola! Gracias por escribirnos. ¿En qué te podemos ayudar?",
+    position: 1,
+  },
+  {
+    title: "Pedir datos",
+    body: "Para armarte la cotización necesito tu nombre completo y la ciudad de entrega.",
+    position: 2,
+  },
+  {
+    title: "Seguimiento",
+    body: "Te escribo para dar seguimiento a tu cotización. ¿Sigues interesado?",
+    position: 3,
+  },
+  {
+    title: "Baja",
+    body: "Listo, no volveremos a escribirte. Si cambias de opinión, aquí estamos.",
+    position: 4,
+  },
+];
+
 async function main() {
   const sql = postgres(url!, { max: 1 });
   const db = drizzle(sql);
@@ -36,7 +61,18 @@ async function main() {
     await db.insert(stages).values(stage).onConflictDoNothing();
   }
 
-  console.log(`✅ ${DEFAULT_STAGES.length} etapas listas`);
+  // Solo se siembran si la tabla está vacía: no pisar lo que edite el equipo.
+  const existing = await db.select({ id: quickReplies.id }).from(quickReplies).limit(1);
+  if (existing.length === 0) {
+    await db.insert(quickReplies).values(DEFAULT_QUICK_REPLIES);
+  }
+
+  console.log(
+    `✅ ${DEFAULT_STAGES.length} etapas listas` +
+      (existing.length === 0
+        ? ` · ${DEFAULT_QUICK_REPLIES.length} respuestas rápidas creadas`
+        : " · respuestas rápidas ya existían")
+  );
   await sql.end();
 }
 

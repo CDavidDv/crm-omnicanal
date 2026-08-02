@@ -29,6 +29,10 @@ npm run dev                      # http://localhost:3000
 
 Login con `ADMIN_EMAIL` / `ADMIN_PASSWORD` del `.env.local`.
 
+**Sin credenciales de Meta:** con `MOCK_CHANNELS=1` los 3 canales se simulan y
+`npm run simulate` inyecta mensajes entrantes firmados en el webhook local. Se
+prueba el CRM entero sin tocar Meta — guía en [`docs/LOCAL.md`](docs/LOCAL.md).
+
 Para recibir mensajes reales hace falta una URL pública con HTTPS:
 
 ```bash
@@ -37,11 +41,25 @@ cloudflared tunnel --url http://localhost:3000
 
 y registrar `https://esa-url/api/webhooks/meta` en Meta.
 
+## Recordatorios de tareas vencidas
+
+Ruta pensada para un cron externo (crontab, GitHub Actions, Railway cron…).
+Solo notifica al equipo: nunca escribe a un contacto, porque un envío
+automático rompería la ventana de 24 h.
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" https://tu-crm/api/cron/reminders
+```
+
+Sin `CRON_SECRET` la ruta responde 503. Con `REMINDERS_WEBHOOK_URL` el resumen
+se publica además en Slack/Discord/n8n.
+
 ## Documentación
 
 | Documento | Contenido |
 |-----------|-----------|
 | [`CLAUDE.md`](CLAUDE.md) | Reglas del proyecto para trabajar con Claude Code |
+| [`docs/LOCAL.md`](docs/LOCAL.md) | Probar todo en local sin credenciales de Meta |
 | [`docs/CREDENCIALES.md`](docs/CREDENCIALES.md) | Cómo obtener cada token, tabla de asignación |
 | [`docs/ANTI-BAN.md`](docs/ANTI-BAN.md) | Política de cero riesgo de bloqueo |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Dónde montarlo y cómo |
@@ -73,7 +91,8 @@ Adaptador del canal → Graph API oficial
 src/
   app/
     (app)/        panel: inbox, pipeline, tasks, reports, settings
-    api/          webhooks/meta, conversations, leads, tasks, metrics, export
+    api/          webhooks/meta, conversations, media, templates,
+                  quick-replies, leads, tasks, metrics, export, cron
     login/
   lib/
     db/           schema Drizzle + cliente

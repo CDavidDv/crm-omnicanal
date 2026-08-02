@@ -29,8 +29,19 @@ const schema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   AI_MODEL: z.string().default("claude-sonnet-5"),
 
+  /** Protege /api/cron/*. Sin esto la ruta queda deshabilitada. */
+  CRON_SECRET: z.string().optional(),
+  /** Destino opcional del resumen de tareas vencidas (Slack, Discord, n8n…). */
+  REMINDERS_WEBHOOK_URL: z.string().optional(),
+
   TZ: z.string().default("America/Mexico_City"),
   CURRENCY: z.string().default("MXN"),
+
+  /**
+   * Solo desarrollo: "1" reemplaza los adaptadores por mocks que no llaman a
+   * Graph API. Permite probar el CRM entero sin credenciales de Meta.
+   */
+  MOCK_CHANNELS: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -46,11 +57,27 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 
+/**
+ * Los canales simulados jamás deben llegar a producción: un envío que el
+ * vendedor cree entregado y que nunca salió es peor que un error visible.
+ * Se falla en el arranque, no en silencio.
+ */
+if (env.MOCK_CHANNELS === "1" && process.env.NODE_ENV === "production") {
+  throw new Error(
+    "MOCK_CHANNELS=1 con NODE_ENV=production. Los canales simulados son solo " +
+      "para desarrollo local: quita la variable del entorno de producción."
+  );
+}
+
+export const MOCK_CHANNELS = env.MOCK_CHANNELS === "1";
+
 /** Un canal está "listo" solo si tiene todas sus credenciales. */
 export const channelConfig = {
   whatsapp: {
     enabled: Boolean(env.WHATSAPP_PHONE_NUMBER_ID && env.WHATSAPP_ACCESS_TOKEN),
     phoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID,
+    /** Solo hace falta para listar plantillas: viven en la WABA, no en el número. */
+    businessAccountId: env.WHATSAPP_BUSINESS_ACCOUNT_ID,
     token: env.WHATSAPP_ACCESS_TOKEN,
   },
   messenger: {

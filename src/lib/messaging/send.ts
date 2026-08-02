@@ -2,7 +2,8 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { activities, contacts, conversations, messages } from "@/lib/db/schema";
 import { getAdapter } from "@/lib/channels";
-import { canSend } from "@/lib/channels/policy";
+import { canSend, type SendDecision } from "@/lib/channels/policy";
+import type { MediaKind } from "@/lib/channels/types";
 
 export interface SendOutboundInput {
   conversationId: number;
@@ -16,13 +17,16 @@ export type SendOutboundResult =
   | { ok: true; messageId: number }
   | { ok: false; reason: string; needsTemplate?: boolean };
 
+type Conversation = typeof conversations.$inferSelect;
+
 /**
- * Único camino para mandar un mensaje. Aplica la policy anti-ban ANTES de
- * llamar a Meta: preferimos fallar aquí que registrar una violación en la cuenta.
+ * Paso previo común a todo envío: cargar la conversación y pasar la policy
+ * anti-ban. Ninguna función de este módulo debe saltárselo.
  */
-export async function sendOutbound(
-  input: SendOutboundInput
-): Promise<SendOutboundResult> {
+async function authorize(conversationId: number): Promise<
+  | { ok: true; conv: Conversation; decision: Extract<SendDecision, { allowed: true }> }
+  | { ok: false; reason: string }
+> {
   const rows = await db
     .select({
       conv: conversations,
@@ -30,7 +34,7 @@ export async function sendOutbound(
     })
     .from(conversations)
     .innerJoin(contacts, eq(conversations.contactId, contacts.id))
-    .where(eq(conversations.id, input.conversationId))
+    .where(eq(conversations.id, conversationId))
     .limit(1);
 
   if (rows.length === 0) return { ok: false, reason: "Conversación no encontrada" };
@@ -45,14 +49,53 @@ export async function sendOutbound(
 
   if (!decision.allowed) return { ok: false, reason: decision.reason };
 
-  const adapter = getAdapter(conv.channel);
-
-  if (!adapter.isEnabled()) {
+  if (!getAdapter(conv.channel).isEnabled()) {
     return {
       ok: false,
       reason: `El canal ${conv.channel} no tiene credenciales configuradas.`,
     };
   }
+
+  return { ok: true, conv, decision };
+}
+
+/** Actualiza la conversación y la línea de tiempo tras un envío exitoso. */
+async function recordSent(
+  conv: Conversation,
+  preview: string,
+  author: string,
+  now: Date
+): Promise<void> {
+  await db
+    .update(conversations)
+    .set({
+      lastOutboundAt: now,
+      lastMessageAt: now,
+      lastMessagePreview: preview.slice(0, 140),
+      unreadCount: 0,
+    })
+    .where(eq(conversations.id, conv.id));
+
+  await db.insert(activities).values({
+    contactId: conv.contactId,
+    type: "message_out",
+    summary: preview.slice(0, 140),
+    payload: { channel: conv.channel, author },
+  });
+}
+
+/**
+ * Único camino para mandar un mensaje. Aplica la policy anti-ban ANTES de
+ * llamar a Meta: preferimos fallar aquí que registrar una violación en la cuenta.
+ */
+export async function sendOutbound(
+  input: SendOutboundInput
+): Promise<SendOutboundResult> {
+  const auth = await authorize(input.conversationId);
+  if (!auth.ok) return { ok: false, reason: auth.reason };
+
+  const { conv, decision } = auth;
+  const adapter = getAdapter(conv.channel);
 
   // Fuera de las 24 h en WhatsApp: obligatorio plantilla aprobada.
   if (decision.mode === "template_required" && !input.template) {
@@ -113,22 +156,103 @@ export async function sendOutbound(
     .set({ status: "sent", externalId: result.externalMessageId ?? null })
     .where(eq(messages.id, row.id));
 
-  await db
-    .update(conversations)
-    .set({
-      lastOutboundAt: now,
-      lastMessageAt: now,
-      lastMessagePreview: input.text.slice(0, 140),
-      unreadCount: 0,
-    })
-    .where(eq(conversations.id, conv.id));
+  await recordSent(conv, input.text, input.author, now);
 
-  await db.insert(activities).values({
-    contactId: conv.contactId,
-    type: "message_out",
-    summary: input.text.slice(0, 140),
-    payload: { channel: conv.channel, author: input.author },
+  return { ok: true, messageId: row.id };
+}
+
+export interface SendOutboundMediaInput {
+  conversationId: number;
+  kind: MediaKind;
+  data: Uint8Array;
+  mime: string;
+  filename: string;
+  caption?: string;
+  author: string;
+}
+
+/**
+ * Adjuntos salientes. Mismo camino y misma policy que el texto: fuera de la
+ * ventana de 24 h WhatsApp solo acepta plantillas, así que el archivo se
+ * rechaza aquí en vez de que lo rechace Meta.
+ */
+export async function sendOutboundMedia(
+  input: SendOutboundMediaInput
+): Promise<SendOutboundResult> {
+  const auth = await authorize(input.conversationId);
+  if (!auth.ok) return { ok: false, reason: auth.reason };
+
+  const { conv, decision } = auth;
+  const adapter = getAdapter(conv.channel);
+
+  if (!adapter.sendMedia) {
+    return {
+      ok: false,
+      reason: `${conv.channel} no admite adjuntar archivos desde la API oficial. Meta solo acepta URL pública en ese canal.`,
+    };
+  }
+
+  if (decision.mode === "template_required") {
+    return {
+      ok: false,
+      reason:
+        "Pasaron más de 24 h desde el último mensaje del contacto. Fuera de la ventana WhatsApp solo permite plantillas aprobadas, no archivos.",
+      needsTemplate: true,
+    };
+  }
+
+  const now = new Date();
+  const preview = input.caption || `📎 ${input.filename}`;
+
+  const [row] = await db
+    .insert(messages)
+    .values({
+      conversationId: conv.id,
+      direction: "outbound",
+      type: input.kind,
+      text: input.caption ?? input.filename,
+      mediaMime: input.mime,
+      status: "queued",
+      author: input.author,
+      createdAt: now,
+    })
+    .returning();
+
+  const result = await adapter.sendMedia({
+    to: conv.externalId,
+    kind: input.kind,
+    data: input.data,
+    mime: input.mime,
+    filename: input.filename,
+    caption: input.caption,
+    tag: decision.mode === "human_agent_tag" ? "HUMAN_AGENT" : undefined,
   });
+
+  if (!result.ok) {
+    await db
+      .update(messages)
+      .set({ status: "failed", error: result.error ?? "Error desconocido" })
+      .where(eq(messages.id, row.id));
+
+    return {
+      ok: false,
+      reason: `Meta rechazó el archivo: ${result.error ?? "error desconocido"}${
+        result.code ? ` (código ${result.code})` : ""
+      }`,
+    };
+  }
+
+  await db
+    .update(messages)
+    .set({
+      status: "sent",
+      externalId: result.externalMessageId ?? null,
+      // Solo WhatsApp devuelve una referencia reutilizable para previsualizar.
+      mediaUrl: result.mediaRef ?? null,
+    })
+    .where(eq(messages.id, row.id));
+
+  await recordSent(conv, preview, input.author, now);
 
   return { ok: true, messageId: row.id };
 }

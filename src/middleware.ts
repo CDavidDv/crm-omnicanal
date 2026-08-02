@@ -6,7 +6,14 @@ import { jwtVerify } from "jose";
  * autentica con la firma X-Hub-Signature-256, no con sesión.
  */
 
-const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/webhooks", "/api/health"];
+/** `/api/cron` no usa sesión: se autentica con CRON_SECRET dentro de la ruta. */
+const PUBLIC_PATHS = [
+  "/login",
+  "/api/auth/login",
+  "/api/webhooks",
+  "/api/health",
+  "/api/cron",
+];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

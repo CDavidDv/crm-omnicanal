@@ -370,6 +370,26 @@ export const webhookEvents = pgTable(
   (t) => [index("idx_webhook_events_created").on(t.createdAt)]
 );
 
+/**
+ * Respuestas rápidas del equipo. Solo texto que el vendedor inserta y puede
+ * editar antes de mandar: no son plantillas de Meta ni sirven fuera de la
+ * ventana de 24 h. `channel` en null = disponible en los tres canales.
+ */
+export const quickReplies = pgTable(
+  "quick_replies",
+  {
+    id: serial("id").primaryKey(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    channel: channelEnum("channel"),
+    position: integer("position").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("idx_quick_replies_order").on(t.position)]
+);
+
 // -----------------------------------------------------------------------------
 // Tipos inferidos
 // -----------------------------------------------------------------------------
@@ -385,3 +405,4 @@ export type Task = typeof tasks.$inferSelect;
 export type Note = typeof notes.$inferSelect;
 export type Activity = typeof activities.$inferSelect;
 export type OutboxRow = typeof outbox.$inferSelect;
+export type QuickReply = typeof quickReplies.$inferSelect;

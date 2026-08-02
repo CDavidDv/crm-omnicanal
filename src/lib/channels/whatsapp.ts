@@ -4,6 +4,7 @@ import type {
   SendResult,
   SendTextRequest,
   SendTemplateRequest,
+  SendMediaRequest,
   InboundMessage,
 } from "./types";
 
@@ -87,6 +88,31 @@ export const whatsappAdapter: ChannelAdapter = {
     });
   },
 
+  /**
+   * Dos pasos obligatorios: subir el binario a `/media` y mandar el id
+   * devuelto. WhatsApp no acepta adjuntar bytes en el mismo POST.
+   */
+  async sendMedia({ to, kind, data, mime, filename, caption }: SendMediaRequest) {
+    const uploaded = await uploadMedia(data, mime, filename);
+    if (!uploaded.ok) return { ok: false, error: uploaded.error };
+
+    // El audio no admite pie de foto; mandarlo devuelve error de Meta.
+    const node: Record<string, unknown> = { id: uploaded.mediaId };
+    if (caption && kind !== "audio") node.caption = caption;
+    if (kind === "document") node.filename = filename;
+
+    const result = await post({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: kind,
+      [kind]: node,
+    });
+
+    // El id sirve para previsualizar lo enviado: el proxy sabe resolverlo.
+    return { ...result, mediaRef: `wa-media:${uploaded.mediaId}` };
+  },
+
   async healthCheck() {
     if (!cfg.enabled) {
       return { ok: false, detail: "Faltan WHATSAPP_PHONE_NUMBER_ID o WHATSAPP_ACCESS_TOKEN" };
@@ -123,6 +149,100 @@ export async function markAsRead(externalMessageId: string): Promise<void> {
       message_id: externalMessageId,
     }),
   }).catch(() => {});
+}
+
+/** Sube un archivo a la cuenta y devuelve el media id (vive 30 días en Meta). */
+export async function uploadMedia(
+  data: Uint8Array,
+  mime: string,
+  filename: string
+): Promise<{ ok: true; mediaId: string } | { ok: false; error: string }> {
+  if (!cfg.enabled) return { ok: false, error: "Canal WhatsApp no configurado" };
+
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mime);
+  form.append("file", new Blob([data as unknown as BlobPart], { type: mime }), filename);
+
+  try {
+    const res = await fetch(`${GRAPH}/${cfg.phoneNumberId}/media`, {
+      method: "POST",
+      // Sin Content-Type: fetch pone el boundary del multipart.
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      body: form,
+    });
+
+    const result = await res.json();
+    if (!res.ok || !result?.id) {
+      return {
+        ok: false,
+        error: result?.error?.message ?? `HTTP ${res.status} al subir el archivo`,
+      };
+    }
+    return { ok: true, mediaId: result.id as string };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface WhatsAppTemplate {
+  name: string;
+  language: string;
+  category: string;
+  /** Texto del cuerpo tal cual lo aprobó Meta, con sus {{1}}, {{2}}… */
+  body: string;
+  /** Cuántas variables hay que rellenar antes de enviar. */
+  variables: number;
+}
+
+/**
+ * Plantillas APROBADAS de la WABA. Es el único contenido que Meta permite
+ * enviar con la ventana de 24 h cerrada (ver docs/ANTI-BAN.md).
+ */
+export async function listTemplates(): Promise<
+  { ok: true; templates: WhatsAppTemplate[] } | { ok: false; error: string }
+> {
+  if (!cfg.enabled) return { ok: false, error: "Canal WhatsApp no configurado" };
+  if (!cfg.businessAccountId) {
+    return {
+      ok: false,
+      error:
+        "Falta WHATSAPP_BUSINESS_ACCOUNT_ID: las plantillas viven en la WABA, no en el número.",
+    };
+  }
+
+  try {
+    const res = await fetch(
+      `${GRAPH}/${cfg.businessAccountId}/message_templates?fields=name,status,language,category,components&limit=100`,
+      { headers: { Authorization: `Bearer ${cfg.token}` } }
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      return { ok: false, error: data?.error?.message ?? `HTTP ${res.status}` };
+    }
+
+    const templates: WhatsAppTemplate[] = (data?.data ?? [])
+      .filter((t: any) => t.status === "APPROVED")
+      .map((t: any) => {
+        const body =
+          t.components?.find((c: any) => c.type === "BODY")?.text ?? "";
+        // Meta numera las variables; el máximo indica cuántos parámetros pide.
+        const nums = [...String(body).matchAll(/\{\{(\d+)\}\}/g)].map((m) =>
+          Number(m[1])
+        );
+        return {
+          name: t.name,
+          language: t.language,
+          category: t.category ?? "UTILITY",
+          body,
+          variables: nums.length ? Math.max(...nums) : 0,
+        };
+      });
+
+    return { ok: true, templates };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**

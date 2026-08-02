@@ -63,6 +63,18 @@ WhatsApp exige opt-in demostrable. Sin él, cada envío es una queja potencial.
 - WhatsApp arranca en 250 destinatarios únicos/24 h; sube solo (1k → 10k → 100k) si
   la **calidad** se mantiene en verde. Forzar volumen la tumba
 
+### Adjuntos y respuestas rápidas
+
+- Los adjuntos salientes pasan por la misma `canSend()` que el texto
+  (`sendOutboundMedia` en `src/lib/messaging/send.ts`). Con la ventana cerrada
+  se rechazan: fuera de las 24 h WhatsApp solo acepta plantilla aprobada
+- El archivo se sube directo a Meta; el CRM no lo publica en ninguna URL
+- Las respuestas rápidas (`quick_replies`) son **texto local que el vendedor
+  inserta y edita**. No son plantillas de Meta y no habilitan enviar fuera de
+  la ventana
+- El cron de recordatorios (`/api/cron/reminders`) notifica al equipo, nunca a
+  un contacto: un saliente automático es justo lo que rompe la ventana
+
 ### Contenido
 
 - Nada de contenido prohibido por las políticas de comercio de Meta (alcohol,

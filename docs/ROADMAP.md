@@ -18,21 +18,34 @@ Fecha de corte: 28 de julio de 2026.
 | Pipeline | kanban con arrastrar y soltar, etapas configurables en DB, cierre automático ganado/perdido | `src/components/Pipeline.tsx` |
 | Tareas | alta, vencidas/hoy/todas, marcar hecha | `src/components/TasksBoard.tsx` |
 | Reportes | ganado del mes, conversión, pipeline por etapa, volumen 14 días, **tasa de opt-out y envíos fallidos** | `src/components/Reports.tsx` |
+| Media entrante | proxy `/api/media/[id]`: resuelve `wa-media:<id>` con el token, valida que el origen sea de Meta y transmite el archivo; render de imagen/audio/video/documento en el hilo | `src/app/api/media/[id]/route.ts`, `src/components/Inbox.tsx` |
+| Media saliente | adjuntar desde la bandeja; WhatsApp sube a `/media` y manda por id, Messenger va por `filedata`. Instagram no: Meta exige URL pública ahí | `src/app/api/conversations/[id]/media/route.ts`, `src/lib/channels/` |
+| Plantillas WhatsApp | listado de las APROBADAS de la WABA y selector con variables cuando la ventana está cerrada | `src/app/api/templates/route.ts`, `src/components/Inbox.tsx` |
+| Respuestas rápidas | snippets por canal (`channel` null = los tres), CRUD por API y selector en el compositor; el seed deja 4 de arranque | `src/app/api/quick-replies/`, `drizzle/0001_*.sql` |
+| Recordatorios | `/api/cron/reminders` protegido por `CRON_SECRET`, agrupa tareas vencidas por responsable y las publica en un webhook interno | `src/app/api/cron/reminders/route.ts` |
 | Export | CSV de contactos + oportunidades (compatible Excel) | `src/app/api/export/contacts/route.ts` |
 | Ajustes | estado en vivo de los 3 canales, URL de webhook, política anti-ban | `src/app/(app)/settings/` |
 | Infra | Dockerfile multi-stage, docker-compose con Postgres, `/api/health` | raíz |
 
 ## 🔜 Siguiente (orden sugerido)
 
-1. **Media entrante en la UI** — proxy `/api/media/[id]` que resuelve el `wa-media:<id>`
-   con el token y transmite el archivo (WhatsApp exige token y la URL caduca a 5 min)
-2. **Envío de imágenes/archivos** desde la bandeja
-3. **Plantillas de WhatsApp** — CRUD y selector cuando la ventana está cerrada
-4. **Respuestas rápidas** (snippets) por canal
-5. **Cron de recordatorios** — notificar tareas vencidas (`/api/cron/reminders`)
-6. **Multiusuario real** — tabla `users`, roles, asignación de conversaciones
-7. **Migración a WebSocket/SSE** si el polling estorba
-8. **IA opcional** — sugerencia de respuesta y resumen de conversación
+1. **Multiusuario real** — tabla `users`, roles, asignación de conversaciones
+2. **Pantalla de ajustes para las respuestas rápidas** — hoy solo hay API y
+   selector; el alta se hace con `POST /api/quick-replies`
+3. **Adjuntos en Instagram** — requiere alojar el archivo en una URL pública
+   (S3/R2 firmado); Meta no acepta subir bytes en ese canal
+4. **Migración a WebSocket/SSE** si el polling estorba
+5. **IA opcional** — sugerencia de respuesta y resumen de conversación
+
+## ⛔ Bloqueado por entorno (no por código)
+
+Nada de lo anterior se puede probar de punta a punta hasta tener:
+
+- **Postgres arriba** — `localhost:5432` no responde y Docker no está instalado.
+  Alternativa sin Docker: Neon/Supabase y cambiar `DATABASE_URL`
+- **Credenciales de Meta** — `META_APP_ID`, `META_APP_SECRET` y las de los tres
+  canales están vacías en `.env.local`
+- **Túnel HTTPS** — `cloudflared` para que Meta pueda entregar los webhooks
 
 ## 🚫 Fuera de alcance (decisión de diseño)
 
