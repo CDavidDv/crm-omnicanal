@@ -1,4 +1,5 @@
 import { ChannelsStatus } from "@/components/ChannelsStatus";
+import { QuickRepliesSettings } from "@/components/QuickRepliesSettings";
 import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
@@ -34,6 +35,18 @@ export default function SettingsPage() {
             además <code>messaging_postbacks</code> en Messenger e Instagram.
           </p>
         </div>
+      </section>
+
+      <section className="mt-6">
+        <h2 className="text-xs font-semibold uppercase text-[--color-muted]">
+          Respuestas rápidas
+        </h2>
+        <p className="mt-1 text-xs text-[--color-muted]">
+          Texto que el vendedor inserta en el compositor y puede editar antes de
+          mandar. No son plantillas de Meta: no habilitan escribir fuera de la
+          ventana de 24 h.
+        </p>
+        <QuickRepliesSettings />
       </section>
 
       <section className="mt-6">

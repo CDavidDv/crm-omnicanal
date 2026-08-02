@@ -9,12 +9,14 @@ import {
   ListTodo,
   LogOut,
   Settings,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/inbox", label: "Bandeja", icon: Inbox },
   { href: "/pipeline", label: "Pipeline", icon: KanbanSquare },
+  { href: "/contacts", label: "Contactos", icon: Users },
   { href: "/tasks", label: "Tareas", icon: ListTodo },
   { href: "/reports", label: "Reportes", icon: BarChart3 },
   { href: "/settings", label: "Ajustes", icon: Settings },
