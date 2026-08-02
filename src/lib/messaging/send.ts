@@ -4,6 +4,7 @@ import { activities, contacts, conversations, messages } from "@/lib/db/schema";
 import { getAdapter } from "@/lib/channels";
 import { canSend, type SendDecision } from "@/lib/channels/policy";
 import type { MediaKind } from "@/lib/channels/types";
+import { enqueue } from "./outbox";
 
 export interface SendOutboundInput {
   conversationId: number;
@@ -14,7 +15,7 @@ export interface SendOutboundInput {
 }
 
 export type SendOutboundResult =
-  | { ok: true; messageId: number }
+  | { ok: true; messageId: number; queued?: boolean }
   | { ok: false; reason: string; needsTemplate?: boolean };
 
 type Conversation = typeof conversations.$inferSelect;
@@ -138,6 +139,41 @@ export async function sendOutbound(
         });
 
   if (!result.ok) {
+    // Fallo transitorio (429, 5xx, red): a la cola. El mensaje queda "queued"
+    // en el hilo y /api/cron/outbox lo reintenta con backoff.
+    if (result.retryable) {
+      await enqueue({
+        conversationId: conv.id,
+        messageId: row.id,
+        channel: conv.channel,
+        externalId: conv.externalId,
+        payload: input.template
+          ? {
+              kind: "template",
+              text: input.text,
+              templateName: input.template.name,
+              languageCode: input.template.language,
+              bodyParams: input.template.params,
+            }
+          : {
+              kind: "text",
+              text: input.text,
+              tag: decision.mode === "human_agent_tag" ? "HUMAN_AGENT" : undefined,
+            },
+        retryAfterSec: result.retryAfterSec,
+        error: result.error ?? "Error transitorio",
+      });
+
+      await db
+        .update(messages)
+        .set({ status: "queued", error: result.error ?? null })
+        .where(eq(messages.id, row.id));
+
+      await recordSent(conv, input.text, input.author, now);
+
+      return { ok: true, messageId: row.id, queued: true };
+    }
+
     await db
       .update(messages)
       .set({ status: "failed", error: result.error ?? "Error desconocido" })
@@ -228,6 +264,9 @@ export async function sendOutboundMedia(
     tag: decision.mode === "human_agent_tag" ? "HUMAN_AGENT" : undefined,
   });
 
+  // Los adjuntos no se encolan aunque el fallo sea transitorio: la cola guarda
+  // JSON, no binarios, y persistir el archivo para reintentarlo obligaría a
+  // almacenamiento aparte. El vendedor lo vuelve a adjuntar, que es un clic.
   if (!result.ok) {
     await db
       .update(messages)
@@ -237,8 +276,10 @@ export async function sendOutboundMedia(
     return {
       ok: false,
       reason: `Meta rechazó el archivo: ${result.error ?? "error desconocido"}${
-        result.code ? ` (código ${result.code})` : ""
-      }`,
+        result.retryable
+          ? " (fallo temporal: vuelve a intentarlo en un momento)"
+          : ""
+      }${result.code ? ` (código ${result.code})` : ""}`,
     };
   }
 

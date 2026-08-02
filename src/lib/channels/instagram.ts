@@ -16,7 +16,7 @@ export const instagramAdapter: ChannelAdapter = {
 
   isEnabled: () => cfg.enabled,
 
-  sendText: (req) => sendMetaMessage(cfg.accountId, cfg.token, req),
+  sendText: (req) => sendMetaMessage("instagram", cfg.accountId, cfg.token, req),
 
   async healthCheck() {
     if (!cfg.enabled) {

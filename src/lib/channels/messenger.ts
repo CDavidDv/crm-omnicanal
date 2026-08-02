@@ -1,4 +1,5 @@
 import { GRAPH, channelConfig } from "@/lib/env";
+import { graphFetch, toSendResult } from "./http";
 import type {
   ChannelAdapter,
   InboundMessage,
@@ -14,8 +15,12 @@ import type {
 
 const cfg = channelConfig.messenger;
 
-/** Compartido con Instagram: el formato de envío es el mismo. */
+/**
+ * Compartido con Instagram: el formato de envío es el mismo. `channel` se pasa
+ * explícito porque el rate limit de channels/http.ts se lleva por canal.
+ */
 export async function sendMetaMessage(
+  channel: "messenger" | "instagram",
   endpointId: string | undefined,
   token: string | undefined,
   { to, text, tag }: SendTextRequest
@@ -24,36 +29,22 @@ export async function sendMetaMessage(
     return { ok: false, error: "Canal no configurado" };
   }
 
-  try {
-    const res = await fetch(`${GRAPH}/${endpointId}/messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        recipient: { id: to },
-        // MESSAGE_TAG solo cuando la policy lo autorizó (fuera de 24 h).
-        messaging_type: tag ? "MESSAGE_TAG" : "RESPONSE",
-        ...(tag ? { tag } : {}),
-        message: { text },
-      }),
-    });
+  const res = await graphFetch(channel, `${GRAPH}/${endpointId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      recipient: { id: to },
+      // MESSAGE_TAG solo cuando la policy lo autorizó (fuera de 24 h).
+      messaging_type: tag ? "MESSAGE_TAG" : "RESPONSE",
+      ...(tag ? { tag } : {}),
+      message: { text },
+    }),
+  });
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      return {
-        ok: false,
-        error: data?.error?.message ?? `HTTP ${res.status}`,
-        code: data?.error?.code,
-      };
-    }
-
-    return { ok: true, externalMessageId: data?.message_id };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  return toSendResult(res, (data) => data?.message_id);
 }
 
 /**
@@ -86,25 +77,13 @@ async function sendMessengerMedia(
     filename
   );
 
-  try {
-    const res = await fetch(`${GRAPH}/${cfg.pageId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      body: form,
-    });
-    const result = await res.json();
+  const res = await graphFetch("messenger", `${GRAPH}/${cfg.pageId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${cfg.token}` },
+    body: form,
+  });
 
-    if (!res.ok) {
-      return {
-        ok: false,
-        error: result?.error?.message ?? `HTTP ${res.status}`,
-        code: result?.error?.code,
-      };
-    }
-    return { ok: true, externalMessageId: result?.message_id };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  return toSendResult(res, (data) => data?.message_id);
 }
 
 export const messengerAdapter: ChannelAdapter = {
@@ -112,7 +91,7 @@ export const messengerAdapter: ChannelAdapter = {
 
   isEnabled: () => cfg.enabled,
 
-  sendText: (req) => sendMetaMessage(cfg.pageId, cfg.token, req),
+  sendText: (req) => sendMetaMessage("messenger", cfg.pageId, cfg.token, req),
 
   sendMedia: sendMessengerMedia,
 

@@ -1,4 +1,5 @@
 import { GRAPH, channelConfig } from "@/lib/env";
+import { graphFetch, toSendResult } from "./http";
 import type {
   ChannelAdapter,
   SendResult,
@@ -20,31 +21,16 @@ async function post(body: unknown): Promise<SendResult> {
     return { ok: false, error: "Canal WhatsApp no configurado" };
   }
 
-  try {
-    const res = await fetch(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+  const res = await graphFetch("whatsapp", `${GRAPH}/${cfg.phoneNumberId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
 
-    const data = await res.json();
-
-    if (!res.ok) {
-      const err = data?.error;
-      return {
-        ok: false,
-        error: err?.message ?? `HTTP ${res.status}`,
-        code: err?.code,
-      };
-    }
-
-    return { ok: true, externalMessageId: data?.messages?.[0]?.id };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  return toSendResult(res, (data) => data?.messages?.[0]?.id);
 }
 
 export const whatsappAdapter: ChannelAdapter = {
@@ -137,7 +123,8 @@ export const whatsappAdapter: ChannelAdapter = {
 /** Marca el mensaje como leído (doble palomita azul) — mejora la percepción. */
 export async function markAsRead(externalMessageId: string): Promise<void> {
   if (!cfg.enabled) return;
-  await fetch(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
+  // Pasa por graphFetch: se dispara en CADA entrante y cuenta contra el límite.
+  await graphFetch("whatsapp", `${GRAPH}/${cfg.phoneNumberId}/messages`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${cfg.token}`,
@@ -148,7 +135,7 @@ export async function markAsRead(externalMessageId: string): Promise<void> {
       status: "read",
       message_id: externalMessageId,
     }),
-  }).catch(() => {});
+  });
 }
 
 /** Sube un archivo a la cuenta y devuelve el media id (vive 30 días en Meta). */
@@ -164,25 +151,17 @@ export async function uploadMedia(
   form.append("type", mime);
   form.append("file", new Blob([data as unknown as BlobPart], { type: mime }), filename);
 
-  try {
-    const res = await fetch(`${GRAPH}/${cfg.phoneNumberId}/media`, {
-      method: "POST",
-      // Sin Content-Type: fetch pone el boundary del multipart.
-      headers: { Authorization: `Bearer ${cfg.token}` },
-      body: form,
-    });
+  const res = await graphFetch("whatsapp", `${GRAPH}/${cfg.phoneNumberId}/media`, {
+    method: "POST",
+    // Sin Content-Type: fetch pone el boundary del multipart.
+    headers: { Authorization: `Bearer ${cfg.token}` },
+    body: form,
+  });
 
-    const result = await res.json();
-    if (!res.ok || !result?.id) {
-      return {
-        ok: false,
-        error: result?.error?.message ?? `HTTP ${res.status} al subir el archivo`,
-      };
-    }
-    return { ok: true, mediaId: result.id as string };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  if (!res.ok) return { ok: false, error: res.error.message };
+  if (!res.data?.id) return { ok: false, error: "Meta no devolvió media id" };
+
+  return { ok: true, mediaId: res.data.id as string };
 }
 
 export interface WhatsAppTemplate {

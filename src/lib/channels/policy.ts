@@ -80,7 +80,9 @@ const OPT_OUT_PATTERNS: RegExp[] = [
   /\bno quiero (recibir|mas|más)/i,
   /\bcancelar suscri/i,
   /\bya no me manden/i,
-  /\bel[ií]miname\b/i,
+  // La forma correcta lleva tilde en la segunda i ("elimíname"), pero llega de
+  // las cuatro maneras. El patrón anterior no cubría justo la bien escrita.
+  /\bel[ií]m[ií]name\b/i,
   /\bno molestar\b/i,
 ];
 

@@ -69,6 +69,13 @@ export interface SendResult {
   error?: string;
   /** Código de error de Meta, para diagnóstico. */
   code?: number;
+  /**
+   * true = el fallo es transitorio (429, 5xx, red). El envío se encola y se
+   * reintenta con backoff en vez de darse por perdido. Ver channels/http.ts.
+   */
+  retryable?: boolean;
+  /** Espera que pidió Meta en `Retry-After`, si la mandó. */
+  retryAfterSec?: number;
 }
 
 export interface ChannelAdapter {
